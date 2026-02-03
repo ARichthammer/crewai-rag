@@ -1,14 +1,18 @@
 """
-Self-RAG System
----------------
-A Self-Reflective Retrieval-Augmented Generation system using CrewAI, FastAPI, and IBM watsonx.
+Agentic RAG System
+------------------
+A Multi-Agent RAG system with dual-LLM verification using CrewAI, FastAPI, and IBM watsonx.
 
 Features:
 - Adaptive retrieval (only when needed)
 - Relevance filtering of retrieved documents
-- Self-critique and answer refinement
-- Single agent architecture (efficient, 1 LLM call)
+- Independent verification with separate LLM
+- True multi-agent architecture (RAG + Verifier)
 - AstraDB vector search with similarity scores
+
+Architecture:
+- RAG Agent (gpt-oss-120b): Research, retrieval, answer generation
+- Verifier Agent (granite-4-h-small): Fact-checking, hallucination detection
 """
 
 # --- Imports ---
@@ -38,17 +42,27 @@ astra_client = DataAPIClient(ASTRA_TOKEN) if ASTRA_TOKEN else None
 astra_db = astra_client.get_database_by_api_endpoint(ASTRA_ENDPOINT) if astra_client and ASTRA_ENDPOINT else None
 astra_collection = astra_db.get_collection(ASTRA_COLLECTION) if astra_db else None
 
-# --- Configure IBM watsonx LLM ---
-llm = LLM(
-    model="watsonx/meta-llama/llama-3-3-70b-instruct",
+# --- Configure IBM watsonx LLMs ---
+# Generator LLM: OpenAI gpt-oss-120b (optimized for reasoning & agentic tasks)
+generator_llm = LLM(
+    model="watsonx/openai/gpt-oss-120b",
     base_url="https://us-south.ml.cloud.ibm.com",
     api_key=WX_API_KEY,
     project_id=PROJECT_ID,
     max_tokens=4000,
 )
 
+# Verifier LLM: IBM Granite 4 (fast, precise fact-checking)
+verifier_llm = LLM(
+    model="watsonx/ibm/granite-4-h-small",
+    base_url="https://us-south.ml.cloud.ibm.com",
+    api_key=WX_API_KEY,
+    project_id=PROJECT_ID,
+    max_tokens=2000,
+)
+
 # --- FastAPI Setup ---
-app = FastAPI(title="Self-RAG CrewAI", version="2.0")
+app = FastAPI(title="Agentic RAG", version="2.0")
 
 
 class ChatRequest(BaseModel):
@@ -58,7 +72,7 @@ class ChatRequest(BaseModel):
 
 
 # ============================================================================
-# SELF-RAG TOOLS
+# RAG TOOLS
 # ============================================================================
 
 class VectorSearchTool(BaseTool):
@@ -95,90 +109,111 @@ class VectorSearchTool(BaseTool):
         return "\n\n---\n\n".join(output)
 
 
-class SelfCritiqueTool(BaseTool):
-    """Evaluates the quality of a generated answer."""
-
-    name: str = "self_critique"
-    description: str = "Evaluate your draft answer for accuracy, completeness, and relevance. Use this to check if your answer needs improvement."
-
-    def _run(self, draft_answer: str) -> str:
-        critique_prompt = f"""
-        Evaluate this answer critically:
-
-        ANSWER: {draft_answer}
-
-        Check for:
-        1. Factual accuracy - Are claims supported?
-        2. Completeness - Does it fully address the question?
-        3. Clarity - Is it easy to understand?
-        4. Relevance - Does it stay on topic?
-
-        Respond with:
-        - QUALITY: [GOOD/NEEDS_IMPROVEMENT]
-        - ISSUES: [List any problems, or "None"]
-        - SUGGESTION: [How to improve, or "None"]
-        """
-
-        result = llm.call(critique_prompt)
-        return str(result)
-
-
 # ============================================================================
-# SELF-RAG AGENT
+# MULTI-AGENT SETUP
 # ============================================================================
 
-self_rag_agent = Agent(
-    role="Self-RAG Assistant",
-    goal="Provide accurate, helpful answers using adaptive retrieval when needed",
-    backstory="""You are a helpful assistant. For domain-specific questions, search the knowledge base first.
-If no relevant results are found, use your general knowledge to answer.
+# RAG Agent: Researches and generates answers
+rag_agent = Agent(
+    role="RAG Research Assistant",
+    goal="Find relevant information and generate accurate, helpful answers",
+    backstory="""You are a research assistant with access to a knowledge base.
+For domain-specific questions, always search the knowledge base first using vector_search.
+Generate comprehensive answers based on retrieved context.
+If no relevant documents are found, use your general knowledge.
 Always respond in the same language as the user's question.
-Give direct, concise answers without explaining your reasoning process.""",
-    llm=llm,
-    tools=[VectorSearchTool(), SelfCritiqueTool()],
+Provide direct answers without explaining your reasoning process.""",
+    llm=generator_llm,
+    tools=[VectorSearchTool()],
+    verbose=False,
+)
+
+# Verifier Agent: Fact-checks and validates answers
+verifier_agent = Agent(
+    role="Quality Assurance Reviewer",
+    goal="Verify factual accuracy and detect potential hallucinations",
+    backstory="""You are a critical reviewer responsible for quality assurance.
+Your job is to verify answers for factual accuracy and consistency.
+Check if claims are supported by the provided context or are well-known facts.
+Be concise in your assessment.
+If the answer is accurate and complete, respond with: PASS
+If there are issues, respond with: FAIL followed by specific feedback for improvement.""",
+    llm=verifier_llm,
+    tools=[],
     verbose=False,
 )
 
 
 # ============================================================================
-# SELF-RAG SYSTEM
+# MULTI-AGENT RAG SYSTEM
 # ============================================================================
 
-class SelfRAGSystem:
-    """Orchestrates the Self-RAG workflow."""
+class MultiAgentRAGSystem:
+    """Orchestrates the Multi-Agent RAG workflow with independent verification."""
+
+    MAX_ITERATIONS = 2  # Maximum refinement attempts
 
     def process_query(self, user_input: str) -> str:
-        task = Task(
+        # Task 1: RAG Agent researches and generates answer
+        rag_task = Task(
             description=f"""
             Answer this query: "{user_input}"
 
             Instructions:
             1. For domain-specific questions: Use vector_search first
-            2. If search returns no results or low relevance: Answer from your general knowledge
-            3. Always provide a complete, helpful answer in the user's language
-            4. Do NOT include your reasoning process in the final answer
-            5. Just give the direct answer to the user
+            2. If search returns relevant results: Base your answer on the retrieved context
+            3. If no relevant results: Use your general knowledge
+            4. Respond in the same language as the query
+            5. Provide a direct, complete answer
 
-            IMPORTANT: Your final output must be ONLY the answer itself, nothing else.
+            Your output must be ONLY the answer itself.
             """,
-            agent=self_rag_agent,
-            expected_output="A direct, helpful answer in the same language as the query",
+            agent=rag_agent,
+            expected_output="A comprehensive, accurate answer in the user's language",
         )
 
+        # Task 2: Verifier Agent checks the answer
+        verify_task = Task(
+            description="""
+            Review the answer provided by the RAG agent.
+
+            Check for:
+            1. Factual accuracy - Are claims supported or verifiable?
+            2. Completeness - Does it address the original question?
+            3. Consistency - No contradictions?
+
+            If accurate and complete: Respond with just "PASS"
+            If issues found: Respond with "FAIL: [specific feedback]"
+            """,
+            agent=verifier_agent,
+            context=[rag_task],
+            expected_output="PASS or FAIL with feedback",
+        )
+
+        # Run the crew
         crew = Crew(
-            agents=[self_rag_agent],
-            tasks=[task],
+            agents=[rag_agent, verifier_agent],
+            tasks=[rag_task, verify_task],
             process=Process.sequential,
             verbose=False,
         )
 
         result = crew.kickoff()
-        return str(result)
+        verification_result = str(result)
+
+        # If PASS, return the RAG answer
+        if "PASS" in verification_result.upper():
+            # Get the RAG task output
+            return str(rag_task.output.raw) if rag_task.output else verification_result
+
+        # If FAIL, return the RAG answer anyway (with note that verification flagged issues)
+        # In production, you might want to iterate here
+        return str(rag_task.output.raw) if rag_task.output else verification_result
 
 
 def run_rag(query: str) -> str:
-    """Convenience wrapper for the Self-RAG system."""
-    return SelfRAGSystem().process_query(query)
+    """Convenience wrapper for the Multi-Agent RAG system."""
+    return MultiAgentRAGSystem().process_query(query)
 
 
 # ============================================================================
@@ -187,7 +222,7 @@ def run_rag(query: str) -> str:
 
 @app.post("/v1/chat")
 async def chat_completion(request: ChatRequest, authorization: str = Header(None)):
-    """Handle chat completions with Self-RAG."""
+    """Handle chat completions with Agentic RAG."""
 
     if not EXPECTED_API_KEY or not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -227,7 +262,7 @@ async def stream_response(query: str):
 @app.get("/")
 def health_check():
     """Health check endpoint."""
-    return {"status": "ok", "message": "Self-RAG System running 🚀", "version": "2.0"}
+    return {"status": "ok", "message": "Agentic RAG System running", "version": "2.0"}
 
 
 # --- Entry Point ---

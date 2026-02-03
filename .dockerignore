@@ -1,0 +1,25 @@
+# Environment (NEVER include in image!)
+.env
+.env.*
+
+# Virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# IDE
+.idea/
+.vscode/
+
+# Git
+.git/
+.gitignore
+
+# macOS
+.DS_Store
+
+# Claude
+.claude/

@@ -11,8 +11,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy app code
 COPY app.py .
 
-# Expose FastAPI port
-EXPOSE 8000
+# Code Engine uses PORT env variable (default 8080)
+ENV PORT=8080
+EXPOSE 8080
 
-# Run the app with uvicorn
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run with dynamic port from Code Engine
+CMD uvicorn app:app --host 0.0.0.0 --port $PORT
