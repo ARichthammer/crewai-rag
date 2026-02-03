@@ -1,0 +1,23 @@
+spec_version: v1
+kind: external
+name: agentic_rag
+title: Agentic RAG Agent
+nickname: agentic_rag
+provider: external_chat
+description: |
+  Use this agent for AI strategy and agentic AI topics, including AI operating models,
+  orchestration, multi-agent systems, and enterprise adoption of autonomous AI.
+  Ask about AI agent architectures, governance frameworks, and implementation patterns.
+tags:
+  - rag
+  - multi-agent
+  - verification
+api_url: "https://agentic-rag.252q85btszgp.us-south.codeengine.appdomain.cloud"
+auth_scheme: BEARER_TOKEN
+auth_config:
+  token: "mein-api-key-123"  # Dein ORCH_API_KEY aus .env
+chat_params:
+  stream: false  # Set to true if you want streaming responses
+config:
+  hidden: false
+  enable_cot: false  # Set to true if you want to show internal steps

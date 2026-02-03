@@ -220,9 +220,9 @@ def run_rag(query: str) -> str:
 # API ENDPOINTS
 # ============================================================================
 
-@app.post("/v1/chat")
+@app.post("/v1/chat/completions")
 async def chat_completion(request: ChatRequest, authorization: str = Header(None)):
-    """Handle chat completions with Agentic RAG."""
+    """Handle chat completions with Agentic RAG (OpenAI-compatible)."""
 
     if not EXPECTED_API_KEY or not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -231,7 +231,7 @@ async def chat_completion(request: ChatRequest, authorization: str = Header(None
     if provided != EXPECTED_API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
 
-    user_message = next((m for m in request.messages if m["role"] == "user"), None)
+    user_message = next((m for m in reversed(request.messages) if m["role"] == "user"), None)
     if not user_message:
         raise HTTPException(status_code=400, detail="Missing user input")
 
@@ -240,19 +240,42 @@ async def chat_completion(request: ChatRequest, authorization: str = Header(None
     if request.stream:
         return StreamingResponse(stream_response(query), media_type="text/event-stream")
     else:
-        return {"response": run_rag(query)}
+        # OpenAI-compatible response format
+        response_text = run_rag(query)
+        return {
+            "id": f"chatcmpl-{os.urandom(12).hex()}",
+            "object": "chat.completion",
+            "model": request.model,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": response_text
+                },
+                "finish_reason": "stop"
+            }]
+        }
 
 
 async def stream_response(query: str):
-    """Stream RAG output as Server-Sent Events."""
+    """Stream RAG output as Server-Sent Events (OpenAI-compatible)."""
     result_text = run_rag(query)
     words = result_text.split()
     chunk = []
+    stream_id = f"chatcmpl-{os.urandom(12).hex()}"
 
     for i, word in enumerate(words, 1):
         chunk.append(word)
         if len(chunk) >= 25 or i == len(words):
-            payload = {"chunk": " ".join(chunk)}
+            payload = {
+                "id": stream_id,
+                "object": "chat.completion.chunk",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": " ".join(chunk) + " "},
+                    "finish_reason": None if i < len(words) else "stop"
+                }]
+            }
             yield f"data: {json.dumps(payload)}\n\n"
             chunk = []
             await asyncio.sleep(0.05)
