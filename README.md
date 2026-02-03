@@ -6,6 +6,31 @@ Ein Multi-Agent RAG System mit Dual-LLM Verifikation, IBM watsonx und AstraDB.
 
 ---
 
+## Was ist Agentic RAG?
+
+```
+Traditional RAG    →    Self-RAG           →    Agentic RAG
+(Blind Retrieval)       (Self-Critique)         (Multi-Agent)
+```
+
+| Aspekt | Traditional RAG | Self-RAG | Agentic RAG |
+|--------|-----------------|----------|-------------|
+| Retrieval | Immer | Adaptiv | Adaptiv |
+| Verifikation | Keine | Selbst (gleicher Bias) | Unabhängig (Dual-LLM) |
+| LLMs | 1 | 1 | 2+ |
+| Halluzinationen | Häufig | Reduziert | Stark reduziert |
+| Kosten | Niedrig | Niedrig | Mittel |
+
+### Warum zwei verschiedene LLMs?
+
+| Aspekt | Single-LLM | Dual-LLM |
+|--------|------------|----------|
+| **Bias** | Gleiche Fehler wiederholt | Unterschiedliche Perspektiven |
+| **Halluzinationen** | Selbst-bestätigt | Unabhängig erkannt |
+| **Spezialisierung** | Allrounder | Generierung vs. Prüfung |
+
+---
+
 ## Architektur
 
 ```
@@ -16,7 +41,6 @@ User Query
 │  RAG Agent (gpt-oss-120b)           │
 │  - Recherchiert in Knowledge Base   │
 │  - Generiert umfassende Antwort     │
-│  - Optimiert für Kreativität        │
 └─────────────────────────────────────┘
     │
     ▼
@@ -24,7 +48,6 @@ User Query
 │  Verifier Agent (granite-4-h-small) │
 │  - Prüft Faktentreue                │
 │  - Erkennt Halluzinationen          │
-│  - Optimiert für Präzision          │
 └─────────────────────────────────────┘
     │
     ├─► PASS → Response an User
@@ -32,29 +55,13 @@ User Query
     └─► FAIL → Feedback zur Verbesserung
 ```
 
----
+### Agentic RAG Patterns
 
-## Was ist Agentic RAG?
-
-```
-Traditional RAG    →    Self-RAG           →    Agentic RAG
-(Blind Retrieval)       (Self-Critique)         (Multi-Agent)
-```
-
-| Generation | Beschreibung | Limitation |
-|------------|--------------|------------|
-| **Traditional RAG** | Query → Retrieve → Generate | Keine Qualitätskontrolle |
-| **Self-RAG** | Ein LLM kritisiert sich selbst | Gleicher Bias, eigene Fehler unsichtbar |
-| **Agentic RAG** | Mehrere spezialisierte LLMs | Höhere Komplexität, mehr Kosten |
-
-### Warum zwei verschiedene LLMs?
-
-| Aspekt | Single-LLM | Dual-LLM |
-|--------|------------|----------|
-| **Bias** | Gleiche Fehler wiederholt | Unterschiedliche Perspektiven |
-| **Halluzinationen** | Selbst-bestätigt | Unabhängig erkannt |
-| **Training Data** | Identisch | Unterschiedlich |
-| **Spezialisierung** | Allrounder | Generierung vs. Prüfung |
+| Pattern | Beschreibung |
+|---------|--------------|
+| **Generator + Verifier** | Unser Ansatz: Generator → Verifier → Output |
+| **Planner + Executor + Critic** | Loop: Planner → Executor → Critic → Planner |
+| **Specialized Experts** | Router → Expert A/B/C → Aggregator |
 
 ---
 
@@ -156,41 +163,6 @@ crew = Crew(
 
 ---
 
-## Agentic RAG Patterns
-
-### Pattern 1: Generator + Verifier (Unser Ansatz)
-
-```
-Generator → Verifier → Output
-```
-
-### Pattern 2: Planner + Executor + Critic
-
-```
-Planner → Executor → Critic → Planner (Loop)
-```
-
-### Pattern 3: Specialized Experts
-
-```
-Router → Expert A / Expert B / Expert C → Aggregator
-```
-
----
-
-## Vergleich der Ansätze
-
-| Aspekt | Traditional RAG | Self-RAG | Agentic RAG |
-|--------|-----------------|----------|-------------|
-| Retrieval | Immer | Adaptiv | Adaptiv |
-| Verifikation | Keine | Selbst | Unabhängig |
-| LLMs | 1 | 1 | 2+ |
-| Halluzinationen | Häufig | Reduziert | Stark reduziert |
-| Kosten | Niedrig | Niedrig | Mittel |
-| Komplexität | Niedrig | Mittel | Hoch |
-
----
-
 ## Deployment (IBM Code Engine)
 
 ```bash
@@ -221,7 +193,7 @@ ibmcloud ce app create --name agentic-rag \
 
 ---
 
-## Weiterführende Ressourcen
+## Ressourcen
 
 - [Self-RAG Paper](https://arxiv.org/abs/2310.11511) - Grundlagen der Reflexion
 - [CrewAI Documentation](https://docs.crewai.com/) - Multi-Agent Framework
