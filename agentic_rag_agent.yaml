@@ -1,7 +1,7 @@
 spec_version: v1
 kind: external
 name: agentic_rag
-title: Agentic RAG Agent
+title: Agentic RAG Agent powered by Datastax
 nickname: agentic_rag
 provider: external_chat
 description: |
@@ -12,12 +12,11 @@ tags:
   - rag
   - multi-agent
   - verification
-api_url: "https://agentic-rag.252q85btszgp.us-south.codeengine.appdomain.cloud"
-auth_scheme: BEARER_TOKEN
-auth_config:
-  token: "mein-api-key-123"  # Dein ORCH_API_KEY aus .env
+api_url: "https://agentic-rag.252q85btszgp.us-south.codeengine.appdomain.cloud/v1/chat/completions"
+auth_scheme: NONE
 chat_params:
-  stream: false  # Set to true if you want streaming responses
+  model: agentic-rag
+  stream: true
 config:
   hidden: false
-  enable_cot: false  # Set to true if you want to show internal steps
+  enable_cot: false

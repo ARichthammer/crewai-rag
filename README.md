@@ -99,9 +99,6 @@ PROJECT_ID=<your-project-id>
 ASTRA_DB_APPLICATION_TOKEN=<your-token>
 ASTRA_DB_API_ENDPOINT=<your-endpoint>
 ASTRA_DB_COLLECTION=<your-collection>
-
-# API Security
-ORCH_API_KEY=<your-api-key>
 ```
 
 ### 3. Server starten
@@ -115,10 +112,9 @@ Server läuft auf `http://localhost:8000`
 ### 4. API testen
 
 ```bash
-curl -X POST http://localhost:8000/v1/chat \
-  -H "Authorization: Bearer <ORCH_API_KEY>" \
+curl -X POST http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "test", "messages": [{"role": "user", "content": "Deine Frage"}]}'
+  -d '{"model": "agentic-rag", "messages": [{"role": "user", "content": "Deine Frage"}]}'
 ```
 
 ---
@@ -128,7 +124,8 @@ curl -X POST http://localhost:8000/v1/chat \
 | Endpoint | Methode | Beschreibung |
 |----------|---------|--------------|
 | `/` | GET | Health Check |
-| `/v1/chat` | POST | Chat Completion |
+| `/health` | GET | Health Check (Alternative) |
+| `/v1/chat/completions` | POST | Chat Completion (OpenAI-kompatibel) |
 
 ---
 
@@ -172,14 +169,15 @@ ibmcloud ce secret create --name agentic-rag-secrets \
   --from-literal PROJECT_ID=... \
   --from-literal ASTRA_DB_APPLICATION_TOKEN=... \
   --from-literal ASTRA_DB_API_ENDPOINT=... \
-  --from-literal ASTRA_DB_COLLECTION=... \
-  --from-literal ORCH_API_KEY=...
+  --from-literal ASTRA_DB_COLLECTION=...
 
 # App deployen
 ibmcloud ce app create --name agentic-rag \
   --build-source . \
   --env-from-secret agentic-rag-secrets
 ```
+
+Siehe [codeengine-deployment.md](codeengine-deployment.md) für detaillierte Anleitung.
 
 ---
 

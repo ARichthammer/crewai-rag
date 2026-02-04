@@ -1,0 +1,32 @@
+# Code Engine Ignore File
+# Diese Dateien werden beim Upload zu Code Engine ignoriert
+
+# Virtual environment (sehr groß!)
+.venv/
+venv/
+
+# Environment files (Secrets!)
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# IDE
+.idea/
+.vscode/
+
+# Git
+.git/
+.gitignore
+
+# macOS
+.DS_Store
+
+# Claude
+.claude/
+
+# Documentation
+docs/
+*.md

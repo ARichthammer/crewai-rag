@@ -19,11 +19,11 @@ Architecture:
 from dotenv import load_dotenv
 import os
 import json
-import asyncio
-from typing import Dict, List, Any
-from fastapi import FastAPI, Header, HTTPException
+import time
+from typing import Dict, List, Any, Optional
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 from astrapy import DataAPIClient
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import BaseTool
@@ -35,7 +35,9 @@ PROJECT_ID = os.getenv("PROJECT_ID")
 ASTRA_TOKEN = os.getenv("ASTRA_DB_APPLICATION_TOKEN")
 ASTRA_ENDPOINT = os.getenv("ASTRA_DB_API_ENDPOINT")
 ASTRA_COLLECTION = os.getenv("ASTRA_DB_COLLECTION", "documents")
-EXPECTED_API_KEY = os.getenv("ORCH_API_KEY")
+
+# Model ID for responses
+MODEL_ID = os.getenv("MODEL_ID", "agentic-rag")
 
 # --- Connect to AstraDB ---
 astra_client = DataAPIClient(ASTRA_TOKEN) if ASTRA_TOKEN else None
@@ -64,11 +66,49 @@ verifier_llm = LLM(
 # --- FastAPI Setup ---
 app = FastAPI(title="Agentic RAG", version="2.0")
 
+# CORS Middleware: Erlaubt Cross-Origin Requests (nötig für watsonx Orchestrate)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-class ChatRequest(BaseModel):
-    model: str
-    messages: List[Dict[str, Any]]
-    stream: bool = False
+
+# ============================================================================
+# SSE STREAMING HELPERS
+# ============================================================================
+
+def sse_chunk(delta_content: Optional[str], finish: bool = False) -> Dict[str, Any]:
+    """Produce a single SSE chunk matching OpenAI chat.completion.chunk format."""
+    return {
+        "id": f"cmpl-{int(time.time() * 1000)}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": MODEL_ID,
+        "choices": [{
+            "index": 0,
+            "delta": {} if finish else {"content": delta_content or ""},
+            "finish_reason": "stop" if finish else None
+        }]
+    }
+
+
+def stream_text(text: str):
+    """Stream text in chunks as SSE events."""
+    chunk_size = 160
+    for i in range(0, len(text), chunk_size):
+        yield f"data: {json.dumps(sse_chunk(text[i:i+chunk_size]))}\n\n"
+    yield f"data: {json.dumps(sse_chunk(None, finish=True))}\n\n"
+
+
+def parse_messages(body: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Defensive parsing: ensure we received a 'messages' list."""
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        raise ValueError("Missing 'messages' array")
+    return messages
 
 
 # ============================================================================
@@ -97,7 +137,7 @@ class VectorSearchTool(BaseTool):
             similarity = doc.get("$similarity", 0)
             source = doc.get("metadata", {}).get("url", "")
 
-            if text and similarity >= 0.5:  # Only include somewhat relevant docs
+            if text and similarity >= 0.5:
                 entry = f"[Relevance: {similarity:.2f}] {text}"
                 if source:
                     entry += f"\n(Source: {source})"
@@ -151,10 +191,9 @@ If there are issues, respond with: FAIL followed by specific feedback for improv
 class MultiAgentRAGSystem:
     """Orchestrates the Multi-Agent RAG workflow with independent verification."""
 
-    MAX_ITERATIONS = 2  # Maximum refinement attempts
+    MAX_ITERATIONS = 2
 
     def process_query(self, user_input: str) -> str:
-        # Task 1: RAG Agent researches and generates answer
         rag_task = Task(
             description=f"""
             Answer this query: "{user_input}"
@@ -172,7 +211,6 @@ class MultiAgentRAGSystem:
             expected_output="A comprehensive, accurate answer in the user's language",
         )
 
-        # Task 2: Verifier Agent checks the answer
         verify_task = Task(
             description="""
             Review the answer provided by the RAG agent.
@@ -190,7 +228,6 @@ class MultiAgentRAGSystem:
             expected_output="PASS or FAIL with feedback",
         )
 
-        # Run the crew
         crew = Crew(
             agents=[rag_agent, verifier_agent],
             tasks=[rag_task, verify_task],
@@ -201,13 +238,9 @@ class MultiAgentRAGSystem:
         result = crew.kickoff()
         verification_result = str(result)
 
-        # If PASS, return the RAG answer
         if "PASS" in verification_result.upper():
-            # Get the RAG task output
             return str(rag_task.output.raw) if rag_task.output else verification_result
 
-        # If FAIL, return the RAG answer anyway (with note that verification flagged issues)
-        # In production, you might want to iterate here
         return str(rag_task.output.raw) if rag_task.output else verification_result
 
 
@@ -221,71 +254,61 @@ def run_rag(query: str) -> str:
 # ============================================================================
 
 @app.post("/v1/chat/completions")
-async def chat_completion(request: ChatRequest, authorization: str = Header(None)):
-    """Handle chat completions with Agentic RAG (OpenAI-compatible)."""
+async def chat_completions(req: Request):
+    """
+    Handle chat completions with Agentic RAG.
+    Compatible with watsonx Orchestrate external_chat protocol.
+    Always returns streaming SSE response.
+    """
+    body = await req.json()
 
-    if not EXPECTED_API_KEY or not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        messages = parse_messages(body)
+    except Exception as e:
+        err = f"Error: {str(e)}"
+        return StreamingResponse(
+            stream_text(err),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
 
-    provided = authorization.split("Bearer ")[1].strip()
-    if provided != EXPECTED_API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API key")
+    # Extract the latest user message
+    user_message = next(
+        (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+        None
+    )
 
-    user_message = next((m for m in reversed(request.messages) if m["role"] == "user"), None)
     if not user_message:
-        raise HTTPException(status_code=400, detail="Missing user input")
+        err = "No user message found in request"
+        return StreamingResponse(
+            stream_text(err),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
 
-    query = user_message["content"]
+    # Process with RAG system
+    try:
+        response_text = run_rag(user_message)
+    except Exception as e:
+        response_text = f"Error processing request: {str(e)}"
 
-    if request.stream:
-        return StreamingResponse(stream_response(query), media_type="text/event-stream")
-    else:
-        # OpenAI-compatible response format
-        response_text = run_rag(query)
-        return {
-            "id": f"chatcmpl-{os.urandom(12).hex()}",
-            "object": "chat.completion",
-            "model": request.model,
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": response_text
-                },
-                "finish_reason": "stop"
-            }]
-        }
-
-
-async def stream_response(query: str):
-    """Stream RAG output as Server-Sent Events (OpenAI-compatible)."""
-    result_text = run_rag(query)
-    words = result_text.split()
-    chunk = []
-    stream_id = f"chatcmpl-{os.urandom(12).hex()}"
-
-    for i, word in enumerate(words, 1):
-        chunk.append(word)
-        if len(chunk) >= 25 or i == len(words):
-            payload = {
-                "id": stream_id,
-                "object": "chat.completion.chunk",
-                "choices": [{
-                    "index": 0,
-                    "delta": {"content": " ".join(chunk) + " "},
-                    "finish_reason": None if i < len(words) else "stop"
-                }]
-            }
-            yield f"data: {json.dumps(payload)}\n\n"
-            chunk = []
-            await asyncio.sleep(0.05)
-    yield "data: [DONE]\n\n"
+    return StreamingResponse(
+        stream_text(response_text),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "x-accel-buffering": "no"}
+    )
 
 
 @app.get("/")
 def health_check():
     """Health check endpoint."""
-    return {"status": "ok", "message": "Agentic RAG System running", "version": "2.0"}
+    return {"status": "ok", "message": "Agentic RAG System running", "version": "2.0", "model": MODEL_ID}
+
+
+@app.get("/health")
+def health():
+    """Alternative health check endpoint."""
+    return {"status": "ok", "model": MODEL_ID}
 
 
 # --- Entry Point ---
